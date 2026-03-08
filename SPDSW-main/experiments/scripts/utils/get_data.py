@@ -351,9 +351,17 @@ def get_data(
                 tmin=tmin,
                 tmax=tmax,
             )
-        except ImportError:
+        except ImportError as e:
             if name != "bnci2014001":
                 raise
+            suffix = "T" if training else "E"
+            legacy_file = Path(PATH) / f"A0{subject}{suffix}.mat"
+            if not legacy_file.exists():
+                raise ImportError(
+                    "Failed to load BNCI2014001 via MOABB and legacy MAT files are missing. "
+                    f"Expected legacy file: {legacy_file}. "
+                    "Please install moabb+mne and set MNE_DATA, or place A0xT/A0xE MAT files under experiments/data_bci."
+                ) from e
 
     NO_channels = 22
     NO_tests = 6 * 48
@@ -364,9 +372,10 @@ def get_data(
 
     NO_valid_trial = 0
     if training:
-        a = sio.loadmat(PATH + 'A0' + str(subject) + 'T.mat')
+        mat_file = Path(PATH) / f"A0{subject}T.mat"
     else:
-        a = sio.loadmat(PATH + 'A0' + str(subject) + 'E.mat')
+        mat_file = Path(PATH) / f"A0{subject}E.mat"
+    a = sio.loadmat(str(mat_file))
     a_data = a['data']
     for ii in range(0, a_data.size):
         a_data1 = a_data[0, ii]
