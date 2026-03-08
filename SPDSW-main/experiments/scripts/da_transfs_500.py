@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import hashlib
+from datetime import datetime
 
 from pathlib import Path
 from joblib import Memory
@@ -95,6 +96,14 @@ def _checkpoint_path(params):
     payload = json.dumps(params, sort_keys=True, default=_json_default, separators=(",", ":"))
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
     return os.path.join(CHECKPOINT_DIR, f"{digest}.pt")
+
+
+def _default_lr(distance, cross_subject):
+    if distance in ["lew", "les"]:
+        return 1e-2
+    if distance in ["spdsw", "logsw", "sw"]:
+        return 5e-1 if cross_subject else 1e-1
+    raise ValueError(f"Unsupported distance: {distance}")
 
 # Set to True to download the data in experiments/data_bci
 DOWNLOAD = False
@@ -363,6 +372,7 @@ if __name__ == "__main__":
                 params["target_subject"] = 0
             if params["distance"] != "les":
                 params["reg"] = 1.
+            params["lr"] = _default_lr(params["distance"], params["cross_subject"])
             s_noalign, s_align, runtime = run_test(params)
 
             # Storing results
@@ -381,3 +391,21 @@ if __name__ == "__main__":
 
     results = pd.DataFrame(dico_results)
     results.to_csv(RESULTS)
+
+    task_name = "cross-subject" if args.task == "subject" else "cross-session"
+    summary_rows = []
+    for distance, group in results.groupby("distance"):
+        lr_values = group["lr"].dropna().unique().tolist() if "lr" in group.columns else []
+        lr_repr = ",".join([f"{float(v):g}" for v in lr_values]) if len(lr_values) else "na"
+        summary_rows.append(
+            f"dataset={args.dataset} task={task_name} method={distance} lr={lr_repr} "
+            f"align_mean={group['align'].mean():.6f} align_std={group['align'].std(ddof=0):.6f} "
+            f"no_align_mean={group['no_align'].mean():.6f} no_align_std={group['no_align'].std(ddof=0):.6f} "
+            f"n={len(group)} ntry={args.ntry} device={DEVICE}"
+        )
+
+    acc_file = Path(__file__).resolve().parents[2] / "acc.txt"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    block = [f"[{stamp}] results_csv={RESULTS}"] + summary_rows + [""]
+    with open(acc_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(block))
