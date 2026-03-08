@@ -9,11 +9,107 @@ available on http://bnci-horizon-2020.eu/database/data-sets
 import numpy as np
 import scipy.io as sio
 from typing import Optional, Sequence, Tuple
+from pathlib import Path
 
 from .filters import load_filterbank, butter_fir_filter
 
 __author__ = "Michael Hersche and Tino Rellstab"
 __email__ = "herschmi@ethz.ch,tinor@ethz.ch"
+
+
+TSMNET_DATASET_PRESETS = {
+    "bnci2014001": {
+        "events": ["left_hand", "right_hand", "feet", "tongue"],
+        "channels": None,
+        "resample": None,
+        "tmin": 0.5,
+        "tmax": 3.496,
+    },
+    "bnci2015001": {
+        "events": ["right_hand", "feet"],
+        "channels": None,
+        "resample": 256,
+        "tmin": 1.0,
+        "tmax": 4.0,
+    },
+    "lee2019": {
+        "events": ["left_hand", "right_hand"],
+        "channels": [
+            "FC5", "FC3", "FC1", "FC2", "FC4", "FC6",
+            "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
+            "CP5", "CP3", "CP1", "CPz", "CP2", "CP4", "CP6",
+        ],
+        "resample": 250,
+        "tmin": 1.0,
+        "tmax": 3.5,
+    },
+    "stieger2021": {
+        "events": ["left_hand", "right_hand", "both_hand", "rest"],
+        "sessions": [4, 5, 6, 7, 8, 9, 10, 11],
+        "channels": [
+            "F5", "F3", "F1", "Fz", "F2", "F4", "F6",
+            "FC5", "FC3", "FC1", "FC2", "FC4", "FC6",
+            "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
+            "CP5", "CP3", "CP1", "CPz", "CP2", "CP4", "CP6",
+            "P5", "P3", "P1", "Pz", "P2", "P4", "P6",
+        ],
+        "resample": 250,
+        "tmin": 1.0,
+        "tmax": 2.996,
+    },
+}
+
+
+def _find_tsmnet_root():
+    env_path = Path("/Users/yangxindian/corsw/TSMNet")
+    candidates = [env_path]
+    cwd = Path.cwd()
+    for parent in [cwd] + list(cwd.parents):
+        candidates.extend([parent / "TSMNet", parent / "TSMNet-main"])
+    here = Path(__file__).resolve()
+    for parent in [here.parent] + list(here.parents):
+        candidates.extend([parent / "TSMNet", parent / "TSMNet-main"])
+    seen = set()
+    for c in candidates:
+        c = c.resolve() if c.exists() else c
+        if str(c) in seen:
+            continue
+        seen.add(str(c))
+        if (c / "datasetio" / "eeg" / "moabb" / "__init__.py").exists():
+            return c
+    return None
+
+
+def _load_tsmnet_dataset(dataset_name: str, sessions=None, channels=None, resample=None):
+    try:
+        import sys
+        tsmnet_root = _find_tsmnet_root()
+        if tsmnet_root is None:
+            return None, None
+        tsmnet_root_str = str(tsmnet_root)
+        if tsmnet_root_str not in sys.path:
+            sys.path.insert(0, tsmnet_root_str)
+        from datasetio.eeg.moabb import BNCI2014001, BNCI2015001, Lee2019, Stieger2021
+    except Exception:
+        return None, None
+
+    name = dataset_name.lower()
+    if name == "bnci2014001":
+        return BNCI2014001(), TSMNET_DATASET_PRESETS[name]["events"]
+    if name == "bnci2015001":
+        return BNCI2015001(), TSMNET_DATASET_PRESETS[name]["events"]
+    if name == "lee2019":
+        return Lee2019(), TSMNET_DATASET_PRESETS[name]["events"]
+    if name == "stieger2021":
+        kwargs = {}
+        if sessions is not None:
+            kwargs["sessions"] = list(sessions)
+        if channels is not None:
+            kwargs["channels"] = list(channels)
+        if resample is not None:
+            kwargs["srate"] = int(resample)
+        return Stieger2021(**kwargs), TSMNET_DATASET_PRESETS[name]["events"]
+    return None, None
 
 
 def _resolve_time_windows(fs: int, time_window: Optional[Tuple[float, float]] = None):
@@ -127,45 +223,61 @@ def _load_moabb_subject_data(
         X: numpy array, shape [n_trials, n_channels, n_samples]
         y: numpy array, integer labels in [1..K]
     """
+    name = dataset_name.lower()
+    if name not in TSMNET_DATASET_PRESETS:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
+    preset = TSMNET_DATASET_PRESETS[name]
+    if sessions is None and "sessions" in preset:
+        sessions = preset["sessions"]
+    if channels is None:
+        channels = preset["channels"]
+    if resample is None:
+        resample = preset["resample"]
+    if tmin is None:
+        tmin = preset["tmin"]
+    if tmax is None:
+        tmax = preset["tmax"]
+    events = preset["events"]
+
     try:
         from moabb.paradigms.motor_imagery import MotorImagery
-        from moabb.datasets.bnci import BNCI2015001
-        from moabb.datasets import Lee2019_MI
     except Exception as e:
         raise ImportError(
             "MOABB is required for dataset loading. Install with `pip install moabb mne`."
         ) from e
 
-    name = dataset_name.lower()
-
-    if name == "bnci2015001":
-        dataset = BNCI2015001()
-        events = ["right_hand", "feet"]
-    elif name == "lee2019":
-        dataset = Lee2019_MI()
-        events = ["left_hand", "right_hand"]
-    elif name == "stieger2021":
-        # Prefer native MOABB dataset when available; fallback to TSMNet custom dataset class.
+    dataset, events_tsmnet = _load_tsmnet_dataset(
+        dataset_name=name,
+        sessions=sessions,
+        channels=channels,
+        resample=resample,
+    )
+    if dataset is not None:
+        events = events_tsmnet
+    else:
         try:
-            from moabb.datasets import Stieger2021 as MoabbStieger2021
-            dataset = MoabbStieger2021()
-            events = ["left_hand", "right_hand", "both_hand", "rest"]
-        except Exception:
+            from moabb.datasets.bnci import BNCI2014001, BNCI2015001
+            from moabb.datasets import Lee2019_MI
+        except Exception as e:
+            raise ImportError(
+                "MOABB is required for dataset loading. Install with `pip install moabb mne`."
+            ) from e
+
+        if name == "bnci2014001":
+            dataset = BNCI2014001()
+        elif name == "bnci2015001":
+            dataset = BNCI2015001()
+        elif name == "lee2019":
+            dataset = Lee2019_MI()
+        elif name == "stieger2021":
             try:
-                import sys
-                tsmnet_root = "/root/TSMNet-main"
-                if tsmnet_root not in sys.path:
-                    sys.path.append(tsmnet_root)
-                from datasetio.eeg.moabb.stieger2021 import Stieger2021 as TsmStieger2021
-                dataset = TsmStieger2021()
-                events = ["left_hand", "right_hand", "both_hand", "rest"]
+                from moabb.datasets import Stieger2021 as MoabbStieger2021
+                dataset = MoabbStieger2021()
             except Exception as e:
                 raise ImportError(
-                    "Unable to load Stieger2021 from MOABB/TSMNet. "
-                    "Please ensure moabb is installed or /root/TSMNet-main is available."
+                    "Unable to load Stieger2021. Please install a MOABB version with this dataset "
+                    "or place TSMNet at /Users/yangxindian/corsw/TSMNet."
                 ) from e
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
 
     paradigm_kwargs = dict(events=events)
     if channels is not None:
@@ -226,18 +338,22 @@ def get_data(
         data_return  numpy matrix size = NO_valid_trial x 22 x 1750
         class_return numpy matrix size = NO_valid_trial
     '''
-    # dataset argument tells us which loader path to take
-    if dataset.lower() != "bnci2014001":
-        return _load_moabb_subject_data(
-            dataset_name=dataset,
-            subject=subject,
-            training=training,
-            sessions=sessions,
-            channels=channels,
-            resample=resample,
-            tmin=tmin,
-            tmax=tmax,
-        )
+    name = dataset.lower()
+    if name in TSMNET_DATASET_PRESETS:
+        try:
+            return _load_moabb_subject_data(
+                dataset_name=dataset,
+                subject=subject,
+                training=training,
+                sessions=sessions,
+                channels=channels,
+                resample=resample,
+                tmin=tmin,
+                tmax=tmax,
+            )
+        except ImportError:
+            if name != "bnci2014001":
+                raise
 
     NO_channels = 22
     NO_tests = 6 * 48
