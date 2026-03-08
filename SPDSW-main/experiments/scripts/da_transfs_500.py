@@ -24,7 +24,6 @@ from geoopt import linalg
 from geoopt.optim import RiemannianSGD
 
 from spdsw.spdsw import SPDSW
-from utils.download_bci import download_bci
 from utils.get_data import get_data, get_cov, get_cov2
 from utils.models import Transformations, FeaturesKernel, get_svc
 
@@ -101,6 +100,7 @@ def _checkpoint_path(params):
 DOWNLOAD = False
 
 if DOWNLOAD:
+    from utils.download_bci import download_bci
     path_data = download_bci(EXPERIMENTS)
 
 
