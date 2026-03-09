@@ -9,6 +9,7 @@ available on http://bnci-horizon-2020.eu/database/data-sets
 import numpy as np
 import scipy.io as sio
 import re
+import os
 from typing import Optional, Sequence, Tuple
 
 from .filters import load_filterbank, butter_fir_filter
@@ -299,6 +300,20 @@ def get_data(
 			tmax=tmax,
 		)
 
+	local_split = f"A0{int(subject)}{'T' if training else 'E'}.mat"
+	local_file = os.path.join(PATH, local_split)
+	if not os.path.exists(local_file):
+		return _load_moabb_subject_data(
+			dataset_name=dataset,
+			subject=subject,
+			training=training,
+			sessions=sessions,
+			channels=channels,
+			resample=resample,
+			tmin=tmin,
+			tmax=tmax,
+		)
+
 	NO_channels = 22
 	NO_tests = 6*48 	
 	Window_Length = 7*250 
@@ -307,10 +322,7 @@ def get_data(
 	data_return = np.zeros((NO_tests,NO_channels,Window_Length))
 
 	NO_valid_trial = 0
-	if training:
-		a = sio.loadmat(PATH+'A0'+str(subject)+'T.mat')
-	else:
-		a = sio.loadmat(PATH+'A0'+str(subject)+'E.mat')
+	a = sio.loadmat(local_file)
 	a_data = a['data']
 	for ii in range(0,a_data.size):
 		a_data1 = a_data[0,ii]
