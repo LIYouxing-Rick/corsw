@@ -8,6 +8,7 @@ available on http://bnci-horizon-2020.eu/database/data-sets
 
 import numpy as np
 import scipy.io as sio
+import os
 from typing import Optional, Sequence, Tuple
 from pathlib import Path
 
@@ -61,8 +62,15 @@ TSMNET_DATASET_PRESETS = {
 
 
 def _find_tsmnet_root():
-    env_path = Path("/Users/yangxindian/corsw/TSMNet")
-    candidates = [env_path]
+    candidates = []
+    env_root = os.environ.get("TSMNET_ROOT")
+    if env_root:
+        candidates.append(Path(env_root))
+    candidates.extend([
+        Path("/Users/yangxindian/corsw/TSMNet"),
+        Path("/leonardo_work/EUHPC_D33_186/code/corsw/TSMNet"),
+        Path("/leonardo_work/EUHPC_D33_186/code/corsw/TSMNet-main"),
+    ])
     cwd = Path.cwd()
     for parent in [cwd] + list(cwd.parents):
         candidates.extend([parent / "TSMNet", parent / "TSMNet-main"])
@@ -290,7 +298,17 @@ def _load_moabb_subject_data(
         paradigm_kwargs["tmax"] = float(tmax)
 
     paradigm = MotorImagery(n_classes=len(events), **paradigm_kwargs)
-    X, y, metadata = paradigm.get_data(dataset=dataset, subjects=[subject])
+    try:
+        X, y, metadata = paradigm.get_data(dataset=dataset, subjects=[subject])
+    except Exception as e:
+        if name == "stieger2021" and "api.figshare.com" in str(e):
+            raise RuntimeError(
+                "Stieger2021 loading attempted to contact api.figshare.com, but outbound network is unavailable. "
+                "Use local/offline data by setting TSMNET_ROOT to a local TSMNet checkout "
+                "(for example /leonardo_work/EUHPC_D33_186/code/corsw/TSMNet), "
+                "or run once in an environment with internet to populate MOABB cache under MNE_DATA."
+            ) from e
+        raise
 
     if sessions is not None and len(sessions) > 0:
         mask = metadata["session"].isin(list(sessions)).to_numpy()

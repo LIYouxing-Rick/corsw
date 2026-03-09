@@ -111,6 +111,19 @@ cd "${PROJECT_DIR}"
 
 FAST="/leonardo_scratch/fast/EUHPC_D33_186"
 export MNE_DATA="${FAST}/eeg_datasets/moabb_mne_data"
+TSMNET_CANDIDATES=(
+  "${TSMNET_ROOT:-}"
+  "$WORK/code/corsw/TSMNet"
+  "/leonardo_work/EUHPC_D33_186/code/corsw/TSMNet"
+  "$WORK/code/corsw/TSMNet-main"
+  "/leonardo_work/EUHPC_D33_186/code/corsw/TSMNet-main"
+)
+for t in "${TSMNET_CANDIDATES[@]}"; do
+  if [[ -n "$t" && -f "$t/datasetio/eeg/moabb/__init__.py" ]]; then
+    export TSMNET_ROOT="$t"
+    break
+  fi
+done
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
@@ -120,6 +133,7 @@ echo "Project: ${PROJECT_DIR}"
 echo "Python: $(python -c 'import sys; print(sys.executable)')"
 echo "Dataset=${DATASET} Task=${TASK} NTRY=${NTRY} Device=${DEVICE} Subjects=${SUBJECTS}"
 echo "MNE_DATA=${MNE_DATA}"
+echo "TSMNET_ROOT=${TSMNET_ROOT:-<not-found>}"
 
 python experiments/scripts/da_transfs_500.py \
     --dataset "${DATASET}" \
