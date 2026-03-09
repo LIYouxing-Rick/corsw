@@ -9,6 +9,7 @@ available on http://bnci-horizon-2020.eu/database/data-sets
 import numpy as np
 import scipy.io as sio
 import os
+import re
 from typing import Optional, Sequence, Tuple
 from pathlib import Path
 from types import MethodType
@@ -150,6 +151,14 @@ def _bind_stieger_local_data_path(dataset, sessions: Optional[Sequence] = None):
         return [str(p) for p in files]
 
     dataset.data_path = MethodType(_local_data_path, dataset)
+
+
+def _session_to_int(value):
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    txt = str(value)
+    m = re.search(r"\d+", txt)
+    return int(m.group(0)) if m else None
 
 
 def _resolve_time_windows(fs: int, time_window: Optional[Tuple[float, float]] = None):
@@ -346,7 +355,10 @@ def _load_moabb_subject_data(
         raise
 
     if sessions is not None and len(sessions) > 0:
-        mask = metadata["session"].isin(list(sessions)).to_numpy()
+        requested = {_session_to_int(s) for s in sessions}
+        requested = {s for s in requested if s is not None}
+        session_norm = np.array([_session_to_int(s) for s in metadata["session"].to_numpy()], dtype=object)
+        mask = np.array([(s in requested) for s in session_norm], dtype=bool)
         X = X[mask]
         y = y[mask]
         metadata = metadata.loc[mask]
@@ -358,6 +370,13 @@ def _load_moabb_subject_data(
             mask = (metadata["session"] == selected).to_numpy()
             X = X[mask]
             y = y[mask]
+
+    if len(X) == 0 or len(y) == 0:
+        raise RuntimeError(
+            f"Empty trials after session filtering for dataset={dataset_name}, subject={subject}, "
+            f"training={training}, sessions={sessions}. "
+            "Please verify metadata session labels and requested sessions."
+        )
 
     # Encode string labels to integer labels [1..K] to stay compatible with
     # existing SPDSW scripts where labels are converted via (y - 1).
