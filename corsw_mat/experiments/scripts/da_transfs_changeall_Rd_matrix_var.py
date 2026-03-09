@@ -51,6 +51,8 @@ parser.add_argument("--checkpoint_dir", type=str, default=None, help="checkpoint
 parser.add_argument("--checkpoint_every", type=int, default=1, help="save model checkpoint every N epochs")
 parser.add_argument("--resume", dest="resume", action="store_true", default=True, help="resume from checkpoint")
 parser.add_argument("--no-resume", dest="resume", action="store_false", help="do not resume from checkpoint")
+parser.add_argument("--seed_list", type=str, default=None, help="comma-separated explicit seeds, e.g. 929,1884")
+parser.add_argument("--results_suffix", type=str, default="", help="suffix appended to output csv/checkpoint names")
 args = parser.parse_args()
 
 N_JOBS = 50
@@ -65,6 +67,7 @@ mem = Memory(location=os.path.join(EXPERIMENTS, "scripts/tmp_da/"), verbose=0)
 CHECKPOINT_ROOT = args.checkpoint_dir or os.path.join(EXPERIMENTS, "scripts", "checkpoints_changeall_var")
 CHECKPOINT_MODEL_DIR = os.path.join(CHECKPOINT_ROOT, "model_states")
 os.makedirs(CHECKPOINT_MODEL_DIR, exist_ok=True)
+DEFAULT_SEEDS = [929, 1884, 2473, 7066, 7490]
 
 DOWNLOAD = False
 if DOWNLOAD:
@@ -120,6 +123,13 @@ def _to_builtin(v):
 def _make_param_key(params: dict) -> str:
     payload = json.dumps(_to_builtin(params), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _parse_seed_list(seed_list_arg: str):
+    items = [s.strip() for s in str(seed_list_arg).split(",") if s.strip()]
+    if len(items) == 0:
+        raise ValueError("--seed_list is provided but empty.")
+    return [int(s) for s in items]
 
 @mem.cache
 def run_test(params):
@@ -433,15 +443,25 @@ if __name__ == "__main__":
     lr_tag = _fmt_lr_tag(default_lr)
     power_tag = _fmt_power_tag(default_power)
 
+    if args.seed_list is not None:
+        all_seeds = np.array(_parse_seed_list(args.seed_list), dtype=int)
+    else:
+        all_seeds = np.array(DEFAULT_SEEDS, dtype=int)
+    run_ntry = int(len(all_seeds))
+    suffix = args.results_suffix.strip()
+    if suffix and not suffix.startswith("_"):
+        suffix = f"_{suffix}"
+
     run_name = (
         f"cormat__dataset-{args.dataset}__task-{task_tag}__distance-{args.distance}"
-        f"__epho-{args.epho}__ntry-{NTRY}"
+        f"__epho-{args.epho}__ntry-{run_ntry}"
         f"__lr_cov-{_fmt_lr_tag(default_lr_cov)}"
         f"__lr_cor-{_fmt_lr_tag(default_lr_cor)}"
         f"__lr_mix-{_fmt_lr_tag(default_lr_mix)}"
         f"__power-{_fmt_power_tag(default_power)}"
         f"__max_iter-{args.max_iter}"
         f"__covnet-{args.use_cov_net}__cornet-{args.use_cor_net}"
+        f"{suffix}"
     )
     RESULTS = os.path.join(EXPERIMENTS, "results", f"{run_name}.csv")
     os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
@@ -479,10 +499,9 @@ if __name__ == "__main__":
             json.dump(state, f, ensure_ascii=False)
 
     # Generate all seeds and run per-seed (print NTRY Round like expected)
-    all_seeds = RNG.choice(10000, NTRY, replace=False)
     for try_idx, seed in enumerate(all_seeds):
         print(f"\n{'='*60}")
-        print(f"NTRY Round {try_idx + 1}/{NTRY}, Seed: {seed}")
+        print(f"NTRY Round {try_idx + 1}/{run_ntry}, Seed: {seed}")
         print(f"{'='*60}")
 
         hyperparams = {
@@ -518,7 +537,7 @@ if __name__ == "__main__":
 
         for i, params in enumerate(permuts_params):
             try:
-                print(f"\n[Seed {try_idx+1}/{NTRY}, Exp {i+1}/{len(permuts_params)}] Running:")
+                print(f"\n[Seed {try_idx+1}/{run_ntry}, Exp {i+1}/{len(permuts_params)}] Running:")
                 print(f"  lr_cov={params['lr_cov']:.1e}, lr_cor={params['lr_cor']:.1e}, lr_mix={params['lr_mix']:.1e}, power={params['power']:.2f}, seed={seed}")
                 print(f"  subject={params['subject']}, target={params.get('target_subject', 'N/A')}")
 
@@ -562,17 +581,17 @@ if __name__ == "__main__":
         results_df.to_csv(RESULTS, index=False)
         
         print(f"\n{'='*60}")
-        print(f"Saved all {NTRY} rounds to: {RESULTS}")
+        print(f"Saved all {run_ntry} rounds to: {RESULTS}")
         print(f"Total experiments: {len(results_df)}")
         print(f"{'='*60}")
         
         # Compute aggregated metrics
         print("\n=== Aggregated Results (All NTRY Rounds) ===")
-        print(f"Experiments per subject: {NTRY}")
+        print(f"Experiments per subject: {run_ntry}")
         for distance in distances:
             current_metrics = compute_aggregated_metrics(results_df, distance)
             print(f"\nMethod: {distance}")
-            print(f"Per-subject align accuracy (averaged over {NTRY} seeds):")
+            print(f"Per-subject align accuracy (averaged over {run_ntry} seeds):")
             for idx, s in enumerate(current_metrics['subjects']):
                 print(f"  Subject {s}: {current_metrics['per_subject_align'][idx]:.3f}")
             print(f"Final Align: {current_metrics['align_mean']:.3f} ± {current_metrics['align_std']:.3f}")

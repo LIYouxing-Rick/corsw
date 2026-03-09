@@ -27,6 +27,8 @@ USE_COR_NET=1
 CHECKPOINT_EVERY=1
 CHECKPOINT_DIR=""
 RESUME_FLAG="--resume"
+SEED_LIST="929,1884,2473,7066,7490"
+PARALLEL_SEEDS=1
 EXTRA_ARGS=()
 
 print_usage() {
@@ -47,6 +49,9 @@ print_usage() {
     echo "  --use-cor-net 0|1"
     echo "  --checkpoint-dir PATH"
     echo "  --checkpoint-every N"
+    echo "  --seed-list LIST            comma-separated seeds, default 929,1884,2473,7066,7490"
+    echo "  --parallel-seeds            run one process per seed in parallel on this GPU"
+    echo "  --serial-seeds              disable parallel-seeds mode"
     echo "  --resume | --no-resume"
     echo "  --extra \"ARGS\""
     echo "  -h | --help"
@@ -68,6 +73,9 @@ while [[ $# -gt 0 ]]; do
         --use-cor-net) USE_COR_NET="$2"; shift 2 ;;
         --checkpoint-dir) CHECKPOINT_DIR="$2"; shift 2 ;;
         --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
+        --seed-list) SEED_LIST="$2"; shift 2 ;;
+        --parallel-seeds) PARALLEL_SEEDS=1; shift ;;
+        --serial-seeds) PARALLEL_SEEDS=0; shift ;;
         --resume) RESUME_FLAG="--resume"; shift ;;
         --no-resume) RESUME_FLAG="--no-resume"; shift ;;
         --extra)
@@ -143,26 +151,70 @@ echo "Dataset=${DATASET} Task=${TASK} Distance=${DISTANCE} NTRY=${NTRY}"
 echo "MNE_DATA=${MNE_DATA}"
 echo "CHECKPOINT_EVERY=${CHECKPOINT_EVERY}"
 echo "CHECKPOINT_DIR=${CHECKPOINT_DIR:-<default>}"
+echo "SEED_LIST=${SEED_LIST:-<default>}"
+echo "PARALLEL_SEEDS=${PARALLEL_SEEDS}"
 
 CHECKPOINT_ARGS=()
 if [[ -n "${CHECKPOINT_DIR}" ]]; then
   CHECKPOINT_ARGS=(--checkpoint_dir "${CHECKPOINT_DIR}")
 fi
 
-python experiments/scripts/da_transfs_changeall_Rd_matrix_var.py \
-    --dataset "${DATASET}" \
-    --task "${TASK}" \
-    --distance "${DISTANCE}" \
-    --ntry "${NTRY}" \
-    --epho "${EPHO}" \
-    --lr_cov "${LR_COV}" \
-    --lr_cor "${LR_COR}" \
-    --lr_mix "${LR_MIX}" \
-    --power "${POWER}" \
-    --max_iter "${MAX_ITER}" \
-    --use_cov_net "${USE_COV_NET}" \
-    --use_cor_net "${USE_COR_NET}" \
-    --checkpoint_every "${CHECKPOINT_EVERY}" \
-    ${RESUME_FLAG} \
-    "${CHECKPOINT_ARGS[@]}" \
-    "${EXTRA_ARGS[@]}"
+if [[ "${PARALLEL_SEEDS}" -eq 1 ]]; then
+  IFS=',' read -r -a SEEDS <<< "${SEED_LIST}"
+  PIDS=()
+  for raw_seed in "${SEEDS[@]}"; do
+    seed="$(echo "${raw_seed}" | tr -d '[:space:]')"
+    if [[ -z "${seed}" ]]; then
+      continue
+    fi
+    echo "[PARALLEL] start seed=${seed}"
+    python experiments/scripts/da_transfs_changeall_Rd_matrix_var.py \
+        --dataset "${DATASET}" \
+        --task "${TASK}" \
+        --distance "${DISTANCE}" \
+        --ntry 1 \
+        --seed_list "${seed}" \
+        --results_suffix "seed${seed}" \
+        --epho "${EPHO}" \
+        --lr_cov "${LR_COV}" \
+        --lr_cor "${LR_COR}" \
+        --lr_mix "${LR_MIX}" \
+        --power "${POWER}" \
+        --max_iter "${MAX_ITER}" \
+        --use_cov_net "${USE_COV_NET}" \
+        --use_cor_net "${USE_COR_NET}" \
+        --checkpoint_every "${CHECKPOINT_EVERY}" \
+        ${RESUME_FLAG} \
+        "${CHECKPOINT_ARGS[@]}" \
+        "${EXTRA_ARGS[@]}" &
+    PIDS+=($!)
+  done
+
+  FAIL=0
+  for pid in "${PIDS[@]}"; do
+    wait "${pid}" || FAIL=1
+  done
+  if [[ "${FAIL}" -ne 0 ]]; then
+    echo "[FATAL] At least one parallel seed process failed." >&2
+    exit 4
+  fi
+else
+  python experiments/scripts/da_transfs_changeall_Rd_matrix_var.py \
+      --dataset "${DATASET}" \
+      --task "${TASK}" \
+      --distance "${DISTANCE}" \
+      --ntry "${NTRY}" \
+      --seed_list "${SEED_LIST}" \
+      --epho "${EPHO}" \
+      --lr_cov "${LR_COV}" \
+      --lr_cor "${LR_COR}" \
+      --lr_mix "${LR_MIX}" \
+      --power "${POWER}" \
+      --max_iter "${MAX_ITER}" \
+      --use_cov_net "${USE_COV_NET}" \
+      --use_cor_net "${USE_COR_NET}" \
+      --checkpoint_every "${CHECKPOINT_EVERY}" \
+      ${RESUME_FLAG} \
+      "${CHECKPOINT_ARGS[@]}" \
+      "${EXTRA_ARGS[@]}"
+fi
