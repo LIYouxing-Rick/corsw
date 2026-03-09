@@ -141,6 +141,7 @@ def run_test(params):
     use_cor_net = int(params.get("use_cor_net", 1))
     power_exp = float(params["power"])
     dataset = params.get("dataset", "bnci2014001")
+    sessions = params.get("sessions", None)
     cov_fs = int(params.get("cov_fs", 250))
     cov_time_window = params.get("cov_time_window", None)
     max_iter = int(params.get("max_iter", 100))
@@ -173,7 +174,7 @@ def run_test(params):
         if target_subject == subject:
             return 1.0, 1.0, 0.0
 
-        Xs, ys = get_data(subject, True, PATH_DATA, dataset=dataset)
+        Xs, ys = get_data(subject, True, PATH_DATA, dataset=dataset, sessions=sessions)
         cov_Xs = torch.tensor(get_cov_function(Xs, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for source (exclude from training time)
         L_mlog_Xs = linalg.sym_logm(cov_Xs)
@@ -185,7 +186,7 @@ def run_test(params):
       
         
 
-        Xt, yt = get_data(target_subject, True, PATH_DATA, dataset=dataset)
+        Xt, yt = get_data(target_subject, True, PATH_DATA, dataset=dataset, sessions=sessions)
         cov_Xt = torch.tensor(get_cov_function(Xt, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for target (exclude from training time)
         L_mlog_Xt = linalg.sym_logm(cov_Xt)
@@ -198,7 +199,7 @@ def run_test(params):
         yt = torch.tensor(yt, device=DEVICE, dtype=torch.int) - 1
 
     else:
-        Xs, ys = get_data(subject, True, PATH_DATA, dataset=dataset)
+        Xs, ys = get_data(subject, True, PATH_DATA, dataset=dataset, sessions=sessions)
         cov_Xs = torch.tensor(get_cov_function(Xs, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for source (exclude from training time)
         L_mlog_Xs = linalg.sym_logm(cov_Xs)
@@ -211,7 +212,7 @@ def run_test(params):
         
         ys = torch.tensor(ys, device=DEVICE, dtype=torch.int) - 1
 
-        Xt, yt = get_data(subject, False, PATH_DATA, dataset=dataset)
+        Xt, yt = get_data(subject, False, PATH_DATA, dataset=dataset, sessions=sessions)
         cov_Xt = torch.tensor(get_cov_function(Xt, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for target (exclude from training time)
         L_mlog_Xt = linalg.sym_logm(cov_Xt)
@@ -409,6 +410,12 @@ if __name__ == "__main__":
         default_lr = 1e-1 if args.lr is None else args.lr
         default_power = 1.0 if args.power is None else args.power
         task_tag = "cross_subject"
+    stieger_sessions = None
+    if args.dataset == "stieger2021":
+        if args.task == "session":
+            stieger_sessions = [4, 5, 6, 7, 8, 9, 10, 11]
+        else:
+            stieger_sessions = {"n": 1, "order": "last"}
     
     # derive individual learning rates (with sensible defaults)
     default_lr_cov = args.lr_cov if args.lr_cov is not None else default_lr
@@ -478,6 +485,7 @@ if __name__ == "__main__":
             "multifreq": [False],
             "reg": [10.],
             "dataset": [args.dataset],
+            "sessions": [stieger_sessions],
             "cov_fs": [ds_conf["cov_fs"]],
             "cov_time_window": [ds_conf["cov_time_window"]],
             "max_iter": [args.max_iter],

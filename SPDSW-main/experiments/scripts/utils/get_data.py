@@ -113,7 +113,10 @@ def _load_tsmnet_dataset(dataset_name: str, sessions=None, channels=None, resamp
     if name == "stieger2021":
         kwargs = {}
         if sessions is not None:
-            kwargs["sessions"] = list(sessions)
+            if isinstance(sessions, dict):
+                kwargs["sessions"] = list(TSMNET_DATASET_PRESETS[name]["sessions"])
+            else:
+                kwargs["sessions"] = list(sessions)
         if channels is not None:
             kwargs["channels"] = list(channels)
         if resample is not None:
@@ -130,7 +133,10 @@ def _resolve_mne_data_root() -> Path:
 
 
 def _bind_stieger_local_data_path(dataset, sessions: Optional[Sequence] = None):
-    requested_sessions = None if sessions is None else [int(s) for s in sessions]
+    if isinstance(sessions, dict) or sessions is None:
+        requested_sessions = None
+    else:
+        requested_sessions = [int(s) for s in sessions]
 
     def _local_data_path(self, subject, path=None, force_update=False, update_path=None, verbose=None):
         subj = int(subject)
@@ -260,7 +266,7 @@ def _load_moabb_subject_data(
     dataset_name: str,
     subject: int,
     training: bool,
-    sessions: Optional[Sequence] = None,
+    sessions=None,
     channels: Optional[Sequence[str]] = None,
     resample: Optional[int] = None,
     tmin: Optional[float] = None,
@@ -354,7 +360,19 @@ def _load_moabb_subject_data(
             ) from e
         raise
 
-    if sessions is not None and len(sessions) > 0:
+    if isinstance(sessions, dict):
+        unique_sessions = list(metadata["session"].unique())
+        if sessions.get("order", "first") == "last":
+            unique_sessions = unique_sessions[::-1]
+        take_n = int(sessions.get("n", len(unique_sessions)))
+        requested = {_session_to_int(s) for s in unique_sessions[:take_n]}
+        requested = {s for s in requested if s is not None}
+        session_norm = np.array([_session_to_int(s) for s in metadata["session"].to_numpy()], dtype=object)
+        mask = np.array([(s in requested) for s in session_norm], dtype=bool)
+        X = X[mask]
+        y = y[mask]
+        metadata = metadata.loc[mask]
+    elif sessions is not None and len(sessions) > 0:
         requested = {_session_to_int(s) for s in sessions}
         requested = {s for s in requested if s is not None}
         session_norm = np.array([_session_to_int(s) for s in metadata["session"].to_numpy()], dtype=object)

@@ -134,6 +134,7 @@ def run_test(params):
     epoch_tmax = params.get("epoch_tmax", None)
     cov_fs = int(params.get("cov_fs", 250))
     cov_time_window = params.get("cov_time_window", None)
+    sessions = params.get("sessions", None)
 
     if multifreq:
         get_cov_function = get_cov2
@@ -147,6 +148,7 @@ def run_test(params):
         Xs, ys = get_data(
             subject, True, PATH_DATA,
             dataset=dataset,
+            sessions=sessions,
             resample=resample,
             tmin=epoch_tmin,
             tmax=epoch_tmax,
@@ -161,6 +163,7 @@ def run_test(params):
         Xt, yt = get_data(
             target_subject, True, PATH_DATA,
             dataset=dataset,
+            sessions=sessions,
             resample=resample,
             tmin=epoch_tmin,
             tmax=epoch_tmax,
@@ -177,6 +180,7 @@ def run_test(params):
         Xs, ys = get_data(
             subject, True, PATH_DATA,
             dataset=dataset,
+            sessions=sessions,
             resample=resample,
             tmin=epoch_tmin,
             tmax=epoch_tmax,
@@ -191,6 +195,7 @@ def run_test(params):
         Xt, yt = get_data(
             subject, False, PATH_DATA,
             dataset=dataset,
+            sessions=sessions,
             resample=resample,
             tmin=epoch_tmin,
             tmax=epoch_tmax,
@@ -320,6 +325,12 @@ if __name__ == "__main__":
         "stieger2021": {"cov_fs": 250, "cov_time_window": (1.0, 2.996)},
     }
     ds_defaults = dataset_cov_defaults[args.dataset]
+    stieger_sessions = None
+    if args.dataset == "stieger2021":
+        if args.task == "session":
+            stieger_sessions = [4, 5, 6, 7, 8, 9, 10, 11]
+        else:
+            stieger_sessions = {"n": 1, "order": "last"}
 
     cov_time_window = ds_defaults["cov_time_window"]
     if args.cov_tmin is not None and args.cov_tmax is not None:
@@ -342,6 +353,7 @@ if __name__ == "__main__":
         "multifreq": [False],
         "reg": [10.],
         "dataset": [args.dataset],
+        "sessions": [stieger_sessions],
         "resample": [args.resample],
         "epoch_tmin": [args.epoch_tmin],
         "epoch_tmax": [args.epoch_tmax],

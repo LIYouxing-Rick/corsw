@@ -8,6 +8,7 @@ available on http://bnci-horizon-2020.eu/database/data-sets
 
 import numpy as np
 import scipy.io as sio
+import re
 from typing import Optional, Sequence, Tuple
 
 from .filters import load_filterbank, butter_fir_filter
@@ -167,7 +168,7 @@ def _load_moabb_subject_data(
     dataset_name: str,
     subject: int,
     training: bool,
-    sessions: Optional[Sequence] = None,
+    sessions=None,
     channels: Optional[Sequence[str]] = None,
     resample: Optional[int] = None,
     tmin: Optional[float] = None,
@@ -216,8 +217,29 @@ def _load_moabb_subject_data(
     paradigm = MotorImagery(n_classes=len(events), **paradigm_kwargs)
     X, y, metadata = paradigm.get_data(dataset=dataset, subjects=[subject])
 
-    if sessions is not None and len(sessions) > 0:
-        mask = metadata["session"].isin(list(sessions)).to_numpy()
+    def _session_to_int(value):
+        if isinstance(value, (int, np.integer)):
+            return int(value)
+        m = re.search(r"\d+", str(value))
+        return int(m.group(0)) if m else None
+
+    if isinstance(sessions, dict):
+        unique_sessions = list(metadata["session"].unique())
+        if sessions.get("order", "first") == "last":
+            unique_sessions = unique_sessions[::-1]
+        take_n = int(sessions.get("n", len(unique_sessions)))
+        requested = {_session_to_int(s) for s in unique_sessions[:take_n]}
+        requested = {s for s in requested if s is not None}
+        session_norm = np.array([_session_to_int(s) for s in metadata["session"].to_numpy()], dtype=object)
+        mask = np.array([(s in requested) for s in session_norm], dtype=bool)
+        X = X[mask]
+        y = y[mask]
+        metadata = metadata.loc[mask]
+    elif sessions is not None and len(sessions) > 0:
+        requested = {_session_to_int(s) for s in sessions}
+        requested = {s for s in requested if s is not None}
+        session_norm = np.array([_session_to_int(s) for s in metadata["session"].to_numpy()], dtype=object)
+        mask = np.array([(s in requested) for s in session_norm], dtype=bool)
         X = X[mask]
         y = y[mask]
         metadata = metadata.loc[mask]
@@ -230,13 +252,29 @@ def _load_moabb_subject_data(
             X = X[mask]
             y = y[mask]
 
+    if len(X) == 0 or len(y) == 0:
+        raise RuntimeError(
+            f"Empty trials after session filtering for dataset={dataset_name}, subject={subject}, "
+            f"training={training}, sessions={sessions}."
+        )
+
     uniq = np.unique(y)
     y_map = {lbl: i + 1 for i, lbl in enumerate(uniq)}
     y_int = np.array([y_map[v] for v in y], dtype=np.int64)
     return X, y_int
 
 
-def get_data(subject, training, PATH, dataset: str = "bnci2014001"):
+def get_data(
+    subject,
+    training,
+    PATH,
+    dataset: str = "bnci2014001",
+    sessions=None,
+    channels: Optional[Sequence[str]] = None,
+    resample: Optional[int] = None,
+    tmin: Optional[float] = None,
+    tmax: Optional[float] = None,
+):
 	'''	Loads the dataset 2a of the BCI Competition IV
 	available on http://bnci-horizon-2020.eu/database/data-sets
 
@@ -250,7 +288,16 @@ def get_data(subject, training, PATH, dataset: str = "bnci2014001"):
 	'''
 	name = dataset.lower()
 	if name != "bnci2014001":
-		return _load_moabb_subject_data(dataset_name=dataset, subject=subject, training=training)
+		return _load_moabb_subject_data(
+			dataset_name=dataset,
+			subject=subject,
+			training=training,
+			sessions=sessions,
+			channels=channels,
+			resample=resample,
+			tmin=tmin,
+			tmax=tmax,
+		)
 
 	NO_channels = 22
 	NO_tests = 6*48 	
