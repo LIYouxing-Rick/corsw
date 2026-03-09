@@ -19,6 +19,8 @@ DEVICE="cuda:0"
 SUBJECTS="auto"
 CHECKPOINT_EVERY=1
 RESUME_FLAG="--resume"
+SEED_LIST=""
+PARALLEL_SEEDS=0
 EXTRA_ARGS=()
 
 print_usage() {
@@ -31,6 +33,8 @@ print_usage() {
     echo "  --device DEV                cuda:0 | cpu | auto"
     echo "  --subjects LIST             auto | all | 1,2,3"
     echo "  --checkpoint-every N"
+    echo "  --seed-list LIST            comma-separated seeds, e.g. 0,1,2,3,4"
+    echo "  --parallel-seeds            run one process per seed in parallel on this GPU"
     echo "  --resume | --no-resume"
     echo "  --extra \"ARGS\"             extra args passed to da_transfs_500.py"
     echo "  -h | --help"
@@ -44,6 +48,8 @@ while [[ $# -gt 0 ]]; do
         --device) DEVICE="$2"; shift 2 ;;
         --subjects) SUBJECTS="$2"; shift 2 ;;
         --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
+        --seed-list) SEED_LIST="$2"; shift 2 ;;
+        --parallel-seeds) PARALLEL_SEEDS=1; shift ;;
         --resume) RESUME_FLAG="--resume"; shift ;;
         --no-resume) RESUME_FLAG="--no-resume"; shift ;;
         --extra)
@@ -134,6 +140,8 @@ echo "Python: $(python -c 'import sys; print(sys.executable)')"
 echo "Dataset=${DATASET} Task=${TASK} NTRY=${NTRY} Device=${DEVICE} Subjects=${SUBJECTS}"
 echo "MNE_DATA=${MNE_DATA}"
 echo "TSMNET_ROOT=${TSMNET_ROOT:-<not-found>}"
+echo "SEED_LIST=${SEED_LIST:-<random>}"
+echo "PARALLEL_SEEDS=${PARALLEL_SEEDS}"
 
 if [[ "${DATASET}" == "stieger2021" ]]; then
   STIEGER_DIR="${MNE_DATA}/MNE-Stieger2021-data"
@@ -150,14 +158,56 @@ if [[ "${DATASET}" == "stieger2021" ]]; then
   fi
 fi
 
-python experiments/scripts/da_transfs_500.py \
-    --dataset "${DATASET}" \
-    --task "${TASK}" \
-    --ntry "${NTRY}" \
-    --device "${DEVICE}" \
-    --subjects "${SUBJECTS}" \
-    --checkpoint_every "${CHECKPOINT_EVERY}" \
-    ${RESUME_FLAG} \
-    "${EXTRA_ARGS[@]}"
+if [[ "${PARALLEL_SEEDS}" -eq 1 ]]; then
+  if [[ -z "${SEED_LIST}" ]]; then
+    echo "[FATAL] --parallel-seeds requires --seed-list." >&2
+    exit 3
+  fi
+  IFS=',' read -r -a SEEDS <<< "${SEED_LIST}"
+  PIDS=()
+  for raw_seed in "${SEEDS[@]}"; do
+    seed="$(echo "${raw_seed}" | tr -d '[:space:]')"
+    if [[ -z "${seed}" ]]; then
+      continue
+    fi
+    echo "[PARALLEL] start seed=${seed}"
+    python experiments/scripts/da_transfs_500.py \
+        --dataset "${DATASET}" \
+        --task "${TASK}" \
+        --ntry 1 \
+        --seed_list "${seed}" \
+        --results_suffix "seed${seed}" \
+        --device "${DEVICE}" \
+        --subjects "${SUBJECTS}" \
+        --checkpoint_every "${CHECKPOINT_EVERY}" \
+        ${RESUME_FLAG} \
+        "${EXTRA_ARGS[@]}" &
+    PIDS+=($!)
+  done
+
+  FAIL=0
+  for pid in "${PIDS[@]}"; do
+    wait "${pid}" || FAIL=1
+  done
+  if [[ "${FAIL}" -ne 0 ]]; then
+    echo "[FATAL] At least one parallel seed process failed." >&2
+    exit 4
+  fi
+else
+  SEED_ARGS=()
+  if [[ -n "${SEED_LIST}" ]]; then
+    SEED_ARGS=(--seed_list "${SEED_LIST}")
+  fi
+  python experiments/scripts/da_transfs_500.py \
+      --dataset "${DATASET}" \
+      --task "${TASK}" \
+      --ntry "${NTRY}" \
+      --device "${DEVICE}" \
+      --subjects "${SUBJECTS}" \
+      --checkpoint_every "${CHECKPOINT_EVERY}" \
+      "${SEED_ARGS[@]}" \
+      ${RESUME_FLAG} \
+      "${EXTRA_ARGS[@]}"
+fi
 
 echo "Done. Summary appended to ${PROJECT_DIR}/acc.txt"

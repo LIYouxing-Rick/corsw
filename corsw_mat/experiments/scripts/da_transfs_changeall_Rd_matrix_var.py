@@ -389,13 +389,22 @@ def compute_aggregated_metrics(results_df, distance):
     }
 
 if __name__ == "__main__":
-    dataset_defaults = {
+    dataset_defaults_session = {
         "bnci2014001": {"subjects": [1, 3, 7, 8, 9], "cov_fs": 250, "cov_time_window": (2.5, 6.0)},
         "bnci2015001": {"subjects": list(range(1, 13)), "cov_fs": 256, "cov_time_window": (1.0, 4.0)},
         "lee2019": {"subjects": list(range(1, 55)), "cov_fs": 250, "cov_time_window": (1.0, 3.5)},
         "stieger2021": {"subjects": list(range(1, 63)), "cov_fs": 250, "cov_time_window": (1.0, 2.996)},
     }
-    ds_conf = dataset_defaults[args.dataset]
+    dataset_defaults_subject = {
+        "bnci2014001": {"subjects": [1, 3, 7, 8, 9], "cov_fs": 250, "cov_time_window": (2.5, 6.0)},
+        "bnci2015001": {"subjects": list(range(1, 13)), "cov_fs": 256, "cov_time_window": (1.0, 4.0)},
+        "lee2019": {"subjects": [1, 5, 8, 13, 15, 16, 21, 25, 29, 34, 36, 38, 40, 45, 48, 51], "cov_fs": 250, "cov_time_window": (1.0, 3.5)},
+        "stieger2021": {"subjects": [13, 25, 34, 45, 51], "cov_fs": 250, "cov_time_window": (1.0, 2.996)},
+    }
+    if args.task == "subject":
+        ds_conf = dataset_defaults_subject[args.dataset]
+    else:
+        ds_conf = dataset_defaults_session[args.dataset]
     if args.distance == "all":
         distances = ["ecm", "lecm", "olm", "lsm"]
     else:

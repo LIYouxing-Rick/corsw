@@ -59,6 +59,8 @@ parser.add_argument("--checkpoint_every", type=int, default=1, help="save checkp
 parser.add_argument("--resume", dest="resume", action="store_true", default=True, help="resume from checkpoint")
 parser.add_argument("--no-resume", dest="resume", action="store_false", help="disable checkpoint resume")
 parser.add_argument("--device", type=str, default="auto", help="auto, cpu, cuda, cuda:0 ...")
+parser.add_argument("--seed_list", type=str, default=None, help="comma-separated explicit seeds, e.g. 0,1,2")
+parser.add_argument("--results_suffix", type=str, default="", help="suffix appended to output csv filename")
 args = parser.parse_args()
 
 N_JOBS = 50
@@ -104,6 +106,13 @@ def _default_lr(distance, cross_subject):
     if distance in ["spdsw", "logsw", "sw"]:
         return 5e-1 if cross_subject else 1e-1
     raise ValueError(f"Unsupported distance: {distance}")
+
+
+def _parse_seed_list(seed_list_arg: str):
+    items = [s.strip() for s in str(seed_list_arg).split(",") if s.strip()]
+    if len(items) == 0:
+        raise ValueError("--seed_list is provided but empty.")
+    return [int(s) for s in items]
 
 # Set to True to download the data in experiments/data_bci
 DOWNLOAD = False
@@ -309,13 +318,17 @@ def run_test(params):
 
 
 if __name__ == "__main__":
-    dataset_subject_defaults = {
-        # keep original SPDSW default subset for BNCI2014001
+    dataset_subject_defaults_session = {
         "bnci2014001": [1, 3, 7, 8, 9],
-        # full subject sets for additional datasets
         "bnci2015001": list(range(1, 13)),
         "lee2019": list(range(1, 55)),
         "stieger2021": list(range(1, 63)),
+    }
+    dataset_subject_defaults_subject = {
+        "bnci2014001": [1, 3, 7, 8, 9],
+        "bnci2015001": list(range(1, 13)),
+        "lee2019": [1, 5, 8, 13, 15, 16, 21, 25, 29, 34, 36, 38, 40, 45, 48, 51],
+        "stieger2021": [13, 25, 34, 45, 51],
     }
 
     dataset_cov_defaults = {
@@ -338,15 +351,24 @@ if __name__ == "__main__":
 
     subjects_arg = args.subjects.strip().lower()
     if subjects_arg in ["auto", "all"]:
-        subject_list = dataset_subject_defaults[args.dataset]
+        if args.task == "subject":
+            subject_list = dataset_subject_defaults_subject[args.dataset]
+        else:
+            subject_list = dataset_subject_defaults_session[args.dataset]
     else:
         subject_list = [int(s.strip()) for s in args.subjects.split(",") if s.strip()]
+
+    if args.seed_list is not None:
+        all_seeds = np.array(_parse_seed_list(args.seed_list), dtype=int)
+    else:
+        all_seeds = RNG.choice(10000, NTRY, replace=False)
+    run_ntry = len(all_seeds)
 
     hyperparams = {
         "distance": ["spdsw", "logsw"],
         "n_proj": [500],
         "n_epochs": [500],
-        "seed": RNG.choice(10000, NTRY, replace=False),
+        "seed": all_seeds,
         "subject": subject_list,
         "target_subject": subject_list,
 #         "cross_subject": [False],
@@ -361,12 +383,15 @@ if __name__ == "__main__":
         "cov_time_window": [cov_time_window],
     }
 
+    suffix = args.results_suffix.strip()
+    if suffix and not suffix.startswith("_"):
+        suffix = f"_{suffix}"
     if args.task == "session":
         hyperparams["cross_subject"] = [False]
-        RESULTS = os.path.join(EXPERIMENTS, f"results/da_{args.dataset}_cross_session_epho500.csv")
+        RESULTS = os.path.join(EXPERIMENTS, f"results/da_{args.dataset}_cross_session_epho500{suffix}.csv")
     elif args.task == "subject":
         hyperparams["cross_subject"] = [True]
-        RESULTS = os.path.join(EXPERIMENTS, f"results/da_{args.dataset}_cross_subject_epho500.csv")
+        RESULTS = os.path.join(EXPERIMENTS, f"results/da_{args.dataset}_cross_subject_epho500{suffix}.csv")
 
     keys, values = zip(*hyperparams.items())
     permuts_params = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -413,7 +438,7 @@ if __name__ == "__main__":
             f"dataset={args.dataset} task={task_name} method={distance} lr={lr_repr} "
             f"align_mean={group['align'].mean():.6f} align_std={group['align'].std(ddof=0):.6f} "
             f"no_align_mean={group['no_align'].mean():.6f} no_align_std={group['no_align'].std(ddof=0):.6f} "
-            f"n={len(group)} ntry={args.ntry} device={DEVICE}"
+                f"n={len(group)} ntry={run_ntry} device={DEVICE}"
         )
 
     acc_file = Path(__file__).resolve().parents[2] / "acc.txt"
