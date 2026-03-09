@@ -24,6 +24,9 @@ POWER=0.25
 MAX_ITER=100
 USE_COV_NET=1
 USE_COR_NET=1
+CHECKPOINT_EVERY=1
+CHECKPOINT_DIR=""
+RESUME_FLAG="--resume"
 EXTRA_ARGS=()
 
 print_usage() {
@@ -42,6 +45,9 @@ print_usage() {
     echo "  --max-iter N"
     echo "  --use-cov-net 0|1"
     echo "  --use-cor-net 0|1"
+    echo "  --checkpoint-dir PATH"
+    echo "  --checkpoint-every N"
+    echo "  --resume | --no-resume"
     echo "  --extra \"ARGS\""
     echo "  -h | --help"
 }
@@ -60,6 +66,10 @@ while [[ $# -gt 0 ]]; do
         --max-iter|--max_iter) MAX_ITER="$2"; shift 2 ;;
         --use-cov-net) USE_COV_NET="$2"; shift 2 ;;
         --use-cor-net) USE_COR_NET="$2"; shift 2 ;;
+        --checkpoint-dir) CHECKPOINT_DIR="$2"; shift 2 ;;
+        --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
+        --resume) RESUME_FLAG="--resume"; shift ;;
+        --no-resume) RESUME_FLAG="--no-resume"; shift ;;
         --extra)
             read -r -a EXTRA_ARGS <<< "$2"
             shift 2
@@ -131,6 +141,13 @@ echo "Project: ${PROJECT_DIR}"
 echo "Python: $(python -c 'import sys; print(sys.executable)')"
 echo "Dataset=${DATASET} Task=${TASK} Distance=${DISTANCE} NTRY=${NTRY}"
 echo "MNE_DATA=${MNE_DATA}"
+echo "CHECKPOINT_EVERY=${CHECKPOINT_EVERY}"
+echo "CHECKPOINT_DIR=${CHECKPOINT_DIR:-<default>}"
+
+CHECKPOINT_ARGS=()
+if [[ -n "${CHECKPOINT_DIR}" ]]; then
+  CHECKPOINT_ARGS=(--checkpoint_dir "${CHECKPOINT_DIR}")
+fi
 
 python experiments/scripts/da_transfs_changeall_Rd_matrix_var.py \
     --dataset "${DATASET}" \
@@ -145,4 +162,7 @@ python experiments/scripts/da_transfs_changeall_Rd_matrix_var.py \
     --max_iter "${MAX_ITER}" \
     --use_cov_net "${USE_COV_NET}" \
     --use_cor_net "${USE_COR_NET}" \
+    --checkpoint_every "${CHECKPOINT_EVERY}" \
+    ${RESUME_FLAG} \
+    "${CHECKPOINT_ARGS[@]}" \
     "${EXTRA_ARGS[@]}"

@@ -135,6 +135,21 @@ echo "Dataset=${DATASET} Task=${TASK} NTRY=${NTRY} Device=${DEVICE} Subjects=${S
 echo "MNE_DATA=${MNE_DATA}"
 echo "TSMNET_ROOT=${TSMNET_ROOT:-<not-found>}"
 
+if [[ "${DATASET}" == "stieger2021" ]]; then
+  STIEGER_DIR="${MNE_DATA}/MNE-Stieger2021-data"
+  STIEGER_MAT_COUNT=0
+  if [[ -d "${STIEGER_DIR}" ]]; then
+    STIEGER_MAT_COUNT=$(find "${STIEGER_DIR}" -maxdepth 1 -type f -name '*.mat' | wc -l | tr -d ' ')
+  fi
+  echo "Stieger local MAT count=${STIEGER_MAT_COUNT} at ${STIEGER_DIR}"
+  if [[ "${STIEGER_MAT_COUNT}" -eq 0 ]]; then
+    echo "[FATAL] No local Stieger2021 MAT files found under ${STIEGER_DIR}." >&2
+    echo "[FATAL] Current cluster nodes cannot access api.figshare.com, so online download will fail." >&2
+    echo "[FATAL] Please pre-populate MNE_DATA cache (MNE-Stieger2021-data/*.mat) or copy files from another machine." >&2
+    exit 2
+  fi
+fi
+
 python experiments/scripts/da_transfs_500.py \
     --dataset "${DATASET}" \
     --task "${TASK}" \

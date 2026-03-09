@@ -11,6 +11,7 @@ import scipy.io as sio
 import os
 from typing import Optional, Sequence, Tuple
 from pathlib import Path
+from types import MethodType
 
 from .filters import load_filterbank, butter_fir_filter
 
@@ -118,6 +119,37 @@ def _load_tsmnet_dataset(dataset_name: str, sessions=None, channels=None, resamp
             kwargs["srate"] = int(resample)
         return Stieger2021(**kwargs), TSMNET_DATASET_PRESETS[name]["events"]
     return None, None
+
+
+def _resolve_mne_data_root() -> Path:
+    mne_data_env = os.environ.get("MNE_DATA")
+    if mne_data_env:
+        return Path(mne_data_env)
+    return Path.home() / "mne_data"
+
+
+def _bind_stieger_local_data_path(dataset, sessions: Optional[Sequence] = None):
+    requested_sessions = None if sessions is None else [int(s) for s in sessions]
+
+    def _local_data_path(self, subject, path=None, force_update=False, update_path=None, verbose=None):
+        subj = int(subject)
+        root = _resolve_mne_data_root() / "MNE-Stieger2021-data"
+        if not root.exists():
+            raise FileNotFoundError(f"Stieger2021 local cache directory not found: {root}")
+
+        if requested_sessions is None:
+            files = sorted(root.glob(f"S{subj}_Session_*.mat"))
+        else:
+            files = [root / f"S{subj}_Session_{ses}.mat" for ses in requested_sessions]
+            files = [p for p in files if p.exists()]
+
+        if len(files) == 0:
+            raise FileNotFoundError(
+                f"No local Stieger2021 files found for subject={subj} under {root}."
+            )
+        return [str(p) for p in files]
+
+    dataset.data_path = MethodType(_local_data_path, dataset)
 
 
 def _resolve_time_windows(fs: int, time_window: Optional[Tuple[float, float]] = None):
@@ -286,6 +318,9 @@ def _load_moabb_subject_data(
                     "Unable to load Stieger2021. Please install a MOABB version with this dataset "
                     "or place TSMNet at /Users/yangxindian/corsw/TSMNet."
                 ) from e
+
+    if name == "stieger2021":
+        _bind_stieger_local_data_path(dataset, sessions=sessions)
 
     paradigm_kwargs = dict(events=events)
     if channels is not None:

@@ -10,8 +10,9 @@ import pandas as pd
 import itertools
 import os
 import math
-import shutil
-from glob import glob
+import json
+import hashlib
+from datetime import datetime
 
 from pathlib import Path
 from joblib import Memory
@@ -26,8 +27,6 @@ from cormat_utils.get_data import get_data, get_cov, get_cov2
 from cormat_utils.models import Transformations, FeaturesKernel, get_svc
 from corswmat.CorMatrix import cov2corr, Correlation
 from corswmat.CorMatrix import CorEuclideanCholeskyMetric, CorLogEuclideanCholeskyMetric, CorOffLogMetric, CorLogScaledMetric
-
-from torch.utils.tensorboard import SummaryWriter
 
 warnings.simplefilter("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -48,6 +47,10 @@ parser.add_argument("--dataset", type=str, default="bnci2014001",
                     choices=["bnci2014001", "bnci2015001", "lee2019", "stieger2021"],
                     help="dataset name")
 parser.add_argument("--max_iter", type=int, default=100, help="max_iter for olm/lsm metrics")
+parser.add_argument("--checkpoint_dir", type=str, default=None, help="checkpoint directory for resume")
+parser.add_argument("--checkpoint_every", type=int, default=1, help="save model checkpoint every N epochs")
+parser.add_argument("--resume", dest="resume", action="store_true", default=True, help="resume from checkpoint")
+parser.add_argument("--no-resume", dest="resume", action="store_false", help="do not resume from checkpoint")
 args = parser.parse_args()
 
 N_JOBS = 50
@@ -59,6 +62,9 @@ DEVICE = "cuda:0"
 DTYPE = torch.float64
 RNG = np.random.default_rng(SEED)
 mem = Memory(location=os.path.join(EXPERIMENTS, "scripts/tmp_da/"), verbose=0)
+CHECKPOINT_ROOT = args.checkpoint_dir or os.path.join(EXPERIMENTS, "scripts", "checkpoints_changeall_var")
+CHECKPOINT_MODEL_DIR = os.path.join(CHECKPOINT_ROOT, "model_states")
+os.makedirs(CHECKPOINT_MODEL_DIR, exist_ok=True)
 
 DOWNLOAD = False
 if DOWNLOAD:
@@ -100,6 +106,21 @@ def _fmt_power_tag(p: float) -> str:
     """Format power value for file naming"""
     return f"{p:g}"
 
+
+def _to_builtin(v):
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, (np.ndarray, list, tuple)):
+        return [_to_builtin(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _to_builtin(val) for k, val in v.items()}
+    return v
+
+
+def _make_param_key(params: dict) -> str:
+    payload = json.dumps(_to_builtin(params), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
 @mem.cache
 def run_test(params):
     """Run a single experiment with given parameters"""
@@ -123,6 +144,8 @@ def run_test(params):
     cov_fs = int(params.get("cov_fs", 250))
     cov_time_window = params.get("cov_time_window", None)
     max_iter = int(params.get("max_iter", 100))
+    param_key = _make_param_key(params)
+    epoch_ckpt = os.path.join(CHECKPOINT_MODEL_DIR, f"{param_key}.pt")
 
     if use_cov_net == 0 and use_cor_net == 0:
         raise ValueError("At least one network must be enabled: set --use_cov_net=1 and/or --use_cor_net=1")
@@ -209,9 +232,6 @@ def run_test(params):
     # learnable fusion weights on simplex via logits -> softmax: lambda1+lambda2=1, lambda>=0
     lambda_logits = nn.Parameter(torch.tensor([0.0, 0.0], device=DEVICE, dtype=DTYPE))
 
-    # Start timing only for training loop
-    start = time.time()
-    
     spdsw = SPDSW(
         d,
         n_proj,
@@ -230,7 +250,25 @@ def run_test(params):
     param_groups.append({"params": [lambda_logits], "lr": lr_mix})
     # geoopt.RiemannianSGD 需要提供基础 lr 参数；各参数组内 lr 会覆盖该基础值
     optimizer = RiemannianSGD(param_groups, lr=lr_cov)
+    start_epoch = 0
+    elapsed_before = 0.0
+    if args.resume and os.path.exists(epoch_ckpt):
+        ckpt = torch.load(epoch_ckpt, map_location=DEVICE)
+        if use_cov_net == 1 and model_mlog is not None and ckpt.get("model_mlog_state") is not None:
+            model_mlog.load_state_dict(ckpt["model_mlog_state"])
+        if use_cor_net == 1 and model_lp is not None and ckpt.get("model_lp_state") is not None:
+            model_lp.load_state_dict(ckpt["model_lp_state"])
+        if ckpt.get("lambda_logits") is not None:
+            lambda_logits.data.copy_(ckpt["lambda_logits"].to(device=DEVICE, dtype=DTYPE))
+        if ckpt.get("optimizer_state") is not None:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_epoch = int(ckpt.get("epoch", -1)) + 1
+        elapsed_before = float(ckpt.get("elapsed", 0.0))
+        print(f"  Resume epoch checkpoint: {epoch_ckpt} (next epoch={start_epoch})")
+
+    start = time.time()
     pbar = trange(
+        start_epoch,
         n_epochs,
         desc=(
             f"Training (lr_cov={lr_cov:.1e}, lr_cor={lr_cor:.1e}, lr_mix={lr_mix:.1e}, "
@@ -257,13 +295,24 @@ def run_test(params):
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
+        elapsed = elapsed_before + (time.time() - start)
+        if ((e + 1) % max(1, int(args.checkpoint_every)) == 0) or (e + 1 == n_epochs):
+            ckpt_payload = {
+                "epoch": int(e),
+                "elapsed": float(elapsed),
+                "model_mlog_state": model_mlog.state_dict() if model_mlog is not None else None,
+                "model_lp_state": model_lp.state_dict() if model_lp is not None else None,
+                "lambda_logits": lambda_logits.detach().clone().cpu(),
+                "optimizer_state": optimizer.state_dict(),
+                "params": _to_builtin(params),
+            }
+            torch.save(ckpt_payload, epoch_ckpt)
         
         pbar.set_postfix_str(
             f"loss = {loss.item():.3f}, lambda1={float(lambda1.item()):.3f}, lambda2={float(lambda2.item()):.3f}"
         )
 
-    stop = time.time()
-    runtime = stop - start
+    runtime = elapsed_before + (time.time() - start)
 
     # evaluate with fused outputs (recompute to ensure variables exist even if epochs=0)
     lam_eval = torch.nn.functional.softmax(lambda_logits, dim=0)
@@ -361,20 +410,57 @@ if __name__ == "__main__":
         default_power = 1.0 if args.power is None else args.power
         task_tag = "cross_subject"
     
-    # CSV filename
-    lr_tag = _fmt_lr_tag(default_lr)
-    power_tag = _fmt_power_tag(default_power)
-    csv_filename = f"下三角对称化_spdsw模型{task_tag}_{args.dataset}_{args.distance}_lr_{lr_tag}_power_{power_tag}_epho{args.epho}_ntry{NTRY}.csv"
-    RESULTS = os.path.join(EXPERIMENTS, "results", csv_filename)
-    os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
-    
-    # Store all NTRY results
-    all_ntry_results = []
-    
     # derive individual learning rates (with sensible defaults)
     default_lr_cov = args.lr_cov if args.lr_cov is not None else default_lr
     default_lr_cor = args.lr_cor if args.lr_cor is not None else default_lr
     default_lr_mix = args.lr_mix if args.lr_mix is not None else (default_lr * 0.1)
+    lr_tag = _fmt_lr_tag(default_lr)
+    power_tag = _fmt_power_tag(default_power)
+
+    run_name = (
+        f"cormat__dataset-{args.dataset}__task-{task_tag}__distance-{args.distance}"
+        f"__epho-{args.epho}__ntry-{NTRY}"
+        f"__lr_cov-{_fmt_lr_tag(default_lr_cov)}"
+        f"__lr_cor-{_fmt_lr_tag(default_lr_cor)}"
+        f"__lr_mix-{_fmt_lr_tag(default_lr_mix)}"
+        f"__power-{_fmt_power_tag(default_power)}"
+        f"__max_iter-{args.max_iter}"
+        f"__covnet-{args.use_cov_net}__cornet-{args.use_cor_net}"
+    )
+    RESULTS = os.path.join(EXPERIMENTS, "results", f"{run_name}.csv")
+    os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
+
+    CHECKPOINT_DIR = CHECKPOINT_ROOT
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    CHECKPOINT_STATE = os.path.join(CHECKPOINT_DIR, f"{run_name}.json")
+
+    all_ntry_results = []
+    completed_keys = set()
+    if args.resume and os.path.exists(CHECKPOINT_STATE):
+        with open(CHECKPOINT_STATE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        all_ntry_results = state.get("all_ntry_results", [])
+        completed_keys = set(state.get("completed_keys", []))
+        print(f"Resumed checkpoint: {CHECKPOINT_STATE}")
+        print(f"Recovered experiments: {len(completed_keys)}")
+    elif args.resume and os.path.exists(RESULTS):
+        existing_df = pd.read_csv(RESULTS)
+        all_ntry_results = existing_df.to_dict(orient="records")
+        if "__param_key" in existing_df.columns:
+            completed_keys = set(existing_df["__param_key"].astype(str).tolist())
+        print(f"Resumed from existing CSV: {RESULTS}")
+        print(f"Recovered experiments: {len(completed_keys)}")
+
+    def _save_checkpoint_state():
+        state = {
+            "run_name": run_name,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "results_csv": RESULTS,
+            "all_ntry_results": all_ntry_results,
+            "completed_keys": sorted(completed_keys),
+        }
+        with open(CHECKPOINT_STATE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
 
     # Generate all seeds and run per-seed (print NTRY Round like expected)
     all_seeds = RNG.choice(10000, NTRY, replace=False)
@@ -423,6 +509,10 @@ if __name__ == "__main__":
                     params["target_subject"] = 0
                 if params["distance"] != "les":
                     params["reg"] = 1.
+                param_key = _make_param_key(params)
+                if param_key in completed_keys:
+                    print("  Skip (already completed in checkpoint)")
+                    continue
 
                 s_noalign, s_align, runtime = run_test(params)
 
@@ -430,11 +520,15 @@ if __name__ == "__main__":
                 result_dict["align"] = s_align
                 result_dict["no_align"] = s_noalign
                 result_dict["time"] = runtime
+                result_dict["__param_key"] = param_key
 
                 if hasattr(result_dict["seed"], 'item'):
                     result_dict["seed"] = result_dict["seed"].item()
 
                 all_ntry_results.append(result_dict)
+                completed_keys.add(param_key)
+                pd.DataFrame(all_ntry_results).to_csv(RESULTS, index=False)
+                _save_checkpoint_state()
 
                 print(f"  Results: align={s_align:.3f}, no_align={s_noalign:.3f}, time={runtime:.1f}s")
 
@@ -467,59 +561,6 @@ if __name__ == "__main__":
             print(f"Final Align: {current_metrics['align_mean']:.3f} ± {current_metrics['align_std']:.3f}")
             print(f"Final No-Align: {current_metrics['noalign_mean']:.3f} ± {current_metrics['noalign_std']:.3f}")
         
-       # Rebuild TensorBoard curves
-        print("\n=== Rebuilding complete TensorBoard curves ===")
-        
-        # 修正：使用正确的文件名模式
-        pattern = f"{task_tag}_{args.distance}_lr_{lr_tag}_power_*_epho*_ntry*.csv"
-        all_csvs = glob(os.path.join(os.path.dirname(RESULTS), pattern))
-        
-        print(f"Found {len(all_csvs)} CSV files for lr={lr_tag}")
-        
-        # 如果没找到匹配的历史文件，至少使用当前文件
-        if not all_csvs and os.path.exists(RESULTS):
-            all_csvs = [RESULTS]
-            print(f"Using current file only: {os.path.basename(RESULTS)}")
-                
-        all_data = []
-        for csv_file in all_csvs:
-            df = pd.read_csv(csv_file)
-            all_data.append(df)
-            print(f"  - Loaded: {os.path.basename(csv_file)} ({len(df)} rows)")
-        
-        if all_data:
-            combined_df = pd.concat(all_data, ignore_index=True)
-            unique_powers = sorted(combined_df['power'].unique())
-            print(f"Power values found: {unique_powers}")
-            
-            run_name = f"{task_tag}_{args.distance}_lr_{lr_tag}"
-            log_dir = os.path.join("/root/tf-logs/", run_name)
-            
-            if os.path.exists(log_dir):
-                shutil.rmtree(log_dir)
-            
-            writer = SummaryWriter(log_dir=log_dir)
-            
-            for power in unique_powers:
-                df_power = combined_df[combined_df['power'] == power]
-                power_metrics = compute_aggregated_metrics(df_power, args.distance)
-                step = int(power * 1000)
-                
-                writer.add_scalar('accuracy/align', power_metrics['align_mean'], step)
-                writer.add_scalar('accuracy/no_align', power_metrics['noalign_mean'], step)
-                writer.add_scalar('accuracy/align_std', power_metrics['align_std'], step)
-                writer.add_scalar('accuracy/no_align_std', power_metrics['noalign_std'], step)
-                writer.add_scalar('time/mean', power_metrics['time_mean'], step)
-                writer.add_scalar('meta/n_experiments', len(df_power), step)
-                
-                print(f"  Power={power:.2f}: align={power_metrics['align_mean']:.3f}±{power_metrics['align_std']:.3f}, "
-                      f"no_align={power_metrics['noalign_mean']:.3f}±{power_metrics['noalign_std']:.3f} "
-                      f"(n={len(df_power)})")
-            
-            writer.close()
-            print(f"\n[TensorBoard] Complete curve written to: {log_dir}")
-            print("To view: tensorboard --logdir=/root/tf-logs/")
-        else:
-            print("No historical data found to merge")
+        print("\nTensorBoard removed")
     else:
         print("\nNo experiments were run")
