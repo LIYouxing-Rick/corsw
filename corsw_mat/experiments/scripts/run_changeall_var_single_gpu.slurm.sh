@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=spdsw_da500_1gpu
+#SBATCH --job-name=corswmat_var_1gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -14,11 +14,16 @@ set -euo pipefail
 
 DATASET="bnci2014001"
 TASK="session"
+DISTANCE="all"
 NTRY=5
-DEVICE="cuda:0"
-SUBJECTS="auto"
-CHECKPOINT_EVERY=1
-RESUME_FLAG="--resume"
+EPHO=500
+LR_COV=2.5
+LR_COR=2.5
+LR_MIX=0.5
+POWER=0.25
+MAX_ITER=100
+USE_COV_NET=1
+USE_COR_NET=1
 EXTRA_ARGS=()
 
 print_usage() {
@@ -27,12 +32,17 @@ print_usage() {
     echo "Options:"
     echo "  --dataset NAME              bnci2014001 | bnci2015001 | lee2019 | stieger2021"
     echo "  --task NAME                 session | subject"
+    echo "  --distance NAME             all | ecm | lecm | olm | lsm"
     echo "  --ntry N"
-    echo "  --device DEV                cuda:0 | cpu | auto"
-    echo "  --subjects LIST             auto | all | 1,2,3"
-    echo "  --checkpoint-every N"
-    echo "  --resume | --no-resume"
-    echo "  --extra \"ARGS\"             extra args passed to da_transfs_500.py"
+    echo "  --epho N"
+    echo "  --lr-cov FLOAT"
+    echo "  --lr-cor FLOAT"
+    echo "  --lr-mix FLOAT"
+    echo "  --power FLOAT"
+    echo "  --max-iter N"
+    echo "  --use-cov-net 0|1"
+    echo "  --use-cor-net 0|1"
+    echo "  --extra \"ARGS\""
     echo "  -h | --help"
 }
 
@@ -40,12 +50,16 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dataset) DATASET="$2"; shift 2 ;;
         --task) TASK="$2"; shift 2 ;;
+        --distance) DISTANCE="$2"; shift 2 ;;
         --ntry) NTRY="$2"; shift 2 ;;
-        --device) DEVICE="$2"; shift 2 ;;
-        --subjects) SUBJECTS="$2"; shift 2 ;;
-        --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
-        --resume) RESUME_FLAG="--resume"; shift ;;
-        --no-resume) RESUME_FLAG="--no-resume"; shift ;;
+        --epho) EPHO="$2"; shift 2 ;;
+        --lr-cov) LR_COV="$2"; shift 2 ;;
+        --lr-cor) LR_COR="$2"; shift 2 ;;
+        --lr-mix) LR_MIX="$2"; shift 2 ;;
+        --power) POWER="$2"; shift 2 ;;
+        --max-iter|--max_iter) MAX_ITER="$2"; shift 2 ;;
+        --use-cov-net) USE_COV_NET="$2"; shift 2 ;;
+        --use-cor-net) USE_COR_NET="$2"; shift 2 ;;
         --extra)
             read -r -a EXTRA_ARGS <<< "$2"
             shift 2
@@ -89,21 +103,18 @@ source "$FOUND_VENV"
 PROJECT_CANDIDATES=(
   "${PROJECT_DIR:-}"
   "${SLURM_SUBMIT_DIR:-}"
-  "$WORK/code/corsw/SPDSW-main"
-  "/leonardo_work/EUHPC_D33_186/code/corsw/SPDSW-main"
+  "$WORK/code/corsw/corsw_mat"
+  "/leonardo_work/EUHPC_D33_186/code/corsw/corsw_mat"
 )
 FOUND_PROJECT=""
 for p in "${PROJECT_CANDIDATES[@]}"; do
-  if [[ -n "$p" && -f "$p/experiments/scripts/da_transfs_500.py" ]]; then
+  if [[ -n "$p" && -f "$p/experiments/scripts/da_transfs_changeall_Rd_matrix_var.py" ]]; then
     FOUND_PROJECT="$p"
     break
   fi
 done
 if [[ -z "$FOUND_PROJECT" ]]; then
-  echo "[FATAL] project dir not found. Tried:" >&2
-  for p in "${PROJECT_CANDIDATES[@]}"; do
-    [[ -n "$p" ]] && echo "  - $p" >&2
-  done
+  echo "[FATAL] project dir not found." >&2
   exit 1
 fi
 PROJECT_DIR="$FOUND_PROJECT"
@@ -118,17 +129,20 @@ export OPENBLAS_NUM_THREADS=8
 
 echo "Project: ${PROJECT_DIR}"
 echo "Python: $(python -c 'import sys; print(sys.executable)')"
-echo "Dataset=${DATASET} Task=${TASK} NTRY=${NTRY} Device=${DEVICE} Subjects=${SUBJECTS}"
+echo "Dataset=${DATASET} Task=${TASK} Distance=${DISTANCE} NTRY=${NTRY}"
 echo "MNE_DATA=${MNE_DATA}"
 
-python experiments/scripts/da_transfs_500.py \
+python experiments/scripts/da_transfs_changeall_Rd_matrix_var.py \
     --dataset "${DATASET}" \
     --task "${TASK}" \
+    --distance "${DISTANCE}" \
     --ntry "${NTRY}" \
-    --device "${DEVICE}" \
-    --subjects "${SUBJECTS}" \
-    --checkpoint_every "${CHECKPOINT_EVERY}" \
-    ${RESUME_FLAG} \
+    --epho "${EPHO}" \
+    --lr_cov "${LR_COV}" \
+    --lr_cor "${LR_COR}" \
+    --lr_mix "${LR_MIX}" \
+    --power "${POWER}" \
+    --max_iter "${MAX_ITER}" \
+    --use_cov_net "${USE_COV_NET}" \
+    --use_cor_net "${USE_COR_NET}" \
     "${EXTRA_ARGS[@]}"
-
-echo "Done. Summary appended to ${PROJECT_DIR}/acc.txt"

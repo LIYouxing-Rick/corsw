@@ -44,6 +44,10 @@ parser.add_argument("--use_cov_net", type=int, default=1, help="enable covarianc
 parser.add_argument("--use_cor_net", type=int, default=1, help="enable correlation network (1=on, 0=off)")
 parser.add_argument("--epho", type=int, default=500, help="number of epochs")
 parser.add_argument("--distance", type=str, default="lsm", help="distance metric")
+parser.add_argument("--dataset", type=str, default="bnci2014001",
+                    choices=["bnci2014001", "bnci2015001", "lee2019", "stieger2021"],
+                    help="dataset name")
+parser.add_argument("--max_iter", type=int, default=100, help="max_iter for olm/lsm metrics")
 args = parser.parse_args()
 
 N_JOBS = 50
@@ -59,9 +63,6 @@ mem = Memory(location=os.path.join(EXPERIMENTS, "scripts/tmp_da/"), verbose=0)
 DOWNLOAD = False
 if DOWNLOAD:
     path_data = download_bci(EXPERIMENTS)
-
-correlation = Correlation(22)
-
 
 def power_matrix(x, a=1):
     """
@@ -118,43 +119,51 @@ def run_test(params):
     use_cov_net = int(params.get("use_cov_net", 1))
     use_cor_net = int(params.get("use_cor_net", 1))
     power_exp = float(params["power"])
+    dataset = params.get("dataset", "bnci2014001")
+    cov_fs = int(params.get("cov_fs", 250))
+    cov_time_window = params.get("cov_time_window", None)
+    max_iter = int(params.get("max_iter", 100))
 
     if use_cov_net == 0 and use_cor_net == 0:
         raise ValueError("At least one network must be enabled: set --use_cov_net=1 and/or --use_cor_net=1")
 
     get_cov_function = get_cov2 if multifreq else get_cov
-    d = 22
 
     if distance == "olm":
-        manifold = CorOffLogMetric(d)
+        d = 22
+        manifold = CorOffLogMetric(d, max_iter=max_iter)
     elif distance == "lsm":
-        manifold = CorLogScaledMetric(d)
+        d = 22
+        manifold = CorLogScaledMetric(d, max_iter=max_iter)
     elif distance == "lecm":
+        d = 22
         manifold =  CorLogEuclideanCholeskyMetric(d)
     elif distance == "ecm":
+        d = 22
         manifold =  CorEuclideanCholeskyMetric(d)
     else:
         raise ValueError(f"Unknown distance: {distance}")
     
-    manifold1 = CorLogScaledMetric(d,max_iter=1)
-    manifold2 = CorOffLogMetric(d,max_iter=1)
+    correlation = Correlation(d)
 
     if cross_subject:
         if target_subject == subject:
             return 1.0, 1.0, 0.0
 
-        Xs, ys = get_data(subject, True, PATH_DATA)
-        cov_Xs = torch.tensor(get_cov_function(Xs), device=DEVICE, dtype=DTYPE)
+        Xs, ys = get_data(subject, True, PATH_DATA, dataset=dataset)
+        cov_Xs = torch.tensor(get_cov_function(Xs, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for source (exclude from training time)
         L_mlog_Xs = linalg.sym_logm(cov_Xs)
+        d = cov_Xs.shape[-1]
+        correlation = Correlation(d)
         covp_Xs = power_matrix(cov_Xs, power_exp)
         cor_Xs = correlation.symmetrize(cov2corr(covp_Xs))
         L_Xs = manifold.deformation(cor_Xs)
       
         
 
-        Xt, yt = get_data(target_subject, True, PATH_DATA)
-        cov_Xt = torch.tensor(get_cov_function(Xt), device=DEVICE, dtype=DTYPE)
+        Xt, yt = get_data(target_subject, True, PATH_DATA, dataset=dataset)
+        cov_Xt = torch.tensor(get_cov_function(Xt, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for target (exclude from training time)
         L_mlog_Xt = linalg.sym_logm(cov_Xt)
         covp_Xt = power_matrix(cov_Xt, power_exp)
@@ -166,10 +175,12 @@ def run_test(params):
         yt = torch.tensor(yt, device=DEVICE, dtype=torch.int) - 1
 
     else:
-        Xs, ys = get_data(subject, True, PATH_DATA)
-        cov_Xs = torch.tensor(get_cov_function(Xs), device=DEVICE, dtype=DTYPE)
+        Xs, ys = get_data(subject, True, PATH_DATA, dataset=dataset)
+        cov_Xs = torch.tensor(get_cov_function(Xs, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for source (exclude from training time)
         L_mlog_Xs = linalg.sym_logm(cov_Xs)
+        d = cov_Xs.shape[-1]
+        correlation = Correlation(d)
         cov_Xs_powered = power_matrix(cov_Xs, power_exp)
         cor_Xs = cov2corr(cov_Xs_powered)
         cor_Xs = correlation.symmetrize(cor_Xs)
@@ -177,8 +188,8 @@ def run_test(params):
         
         ys = torch.tensor(ys, device=DEVICE, dtype=torch.int) - 1
 
-        Xt, yt = get_data(subject, False, PATH_DATA)
-        cov_Xt = torch.tensor(get_cov_function(Xt), device=DEVICE, dtype=DTYPE)
+        Xt, yt = get_data(subject, False, PATH_DATA, dataset=dataset)
+        cov_Xt = torch.tensor(get_cov_function(Xt, fs=cov_fs, time_window=cov_time_window), device=DEVICE, dtype=DTYPE)
         # Precompute mlog(cov) for target (exclude from training time)
         L_mlog_Xt = linalg.sym_logm(cov_Xt)
         cov_Xt_powered = power_matrix(cov_Xt, power_exp)
@@ -328,6 +339,18 @@ def compute_aggregated_metrics(results_df, distance):
     }
 
 if __name__ == "__main__":
+    dataset_defaults = {
+        "bnci2014001": {"subjects": [1, 3, 7, 8, 9], "cov_fs": 250, "cov_time_window": (2.5, 6.0)},
+        "bnci2015001": {"subjects": list(range(1, 13)), "cov_fs": 256, "cov_time_window": (1.0, 4.0)},
+        "lee2019": {"subjects": list(range(1, 55)), "cov_fs": 250, "cov_time_window": (1.0, 3.5)},
+        "stieger2021": {"subjects": list(range(1, 63)), "cov_fs": 250, "cov_time_window": (1.0, 2.996)},
+    }
+    ds_conf = dataset_defaults[args.dataset]
+    if args.distance == "all":
+        distances = ["ecm", "lecm", "olm", "lsm"]
+    else:
+        distances = [args.distance]
+
     # Set default hyperparameters based on task
     if args.task == "session":
         default_lr = 1e-2 if args.lr is None else args.lr
@@ -341,7 +364,7 @@ if __name__ == "__main__":
     # CSV filename
     lr_tag = _fmt_lr_tag(default_lr)
     power_tag = _fmt_power_tag(default_power)
-    csv_filename = f"下三角对称化_spdsw模型{task_tag}_{args.distance}_lr_{lr_tag}_power_{power_tag}_epho{args.epho}_ntry{NTRY}.csv"
+    csv_filename = f"下三角对称化_spdsw模型{task_tag}_{args.dataset}_{args.distance}_lr_{lr_tag}_power_{power_tag}_epho{args.epho}_ntry{NTRY}.csv"
     RESULTS = os.path.join(EXPERIMENTS, "results", csv_filename)
     os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
     
@@ -361,13 +384,17 @@ if __name__ == "__main__":
         print(f"{'='*60}")
 
         hyperparams = {
-            "distance": [args.distance],
+            "distance": distances,
             "n_proj": [500],
             "n_epochs": [args.epho],
             "seed": [seed],
-            "subject": [1, 3, 7, 8, 9],
+            "subject": ds_conf["subjects"],
             "multifreq": [False],
             "reg": [10.],
+            "dataset": [args.dataset],
+            "cov_fs": [ds_conf["cov_fs"]],
+            "cov_time_window": [ds_conf["cov_time_window"]],
+            "max_iter": [args.max_iter],
             "lr_cov": [default_lr_cov],
             "lr_cor": [default_lr_cor],
             "lr_mix": [default_lr_mix],
@@ -381,7 +408,7 @@ if __name__ == "__main__":
             hyperparams["target_subject"] = [0]
         else:
             hyperparams["cross_subject"] = [True]
-            hyperparams["target_subject"] = [1, 3, 7, 8, 9]
+            hyperparams["target_subject"] = ds_conf["subjects"]
 
         keys, values = zip(*hyperparams.items())
         permuts_params = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -429,15 +456,16 @@ if __name__ == "__main__":
         print(f"{'='*60}")
         
         # Compute aggregated metrics
-        current_metrics = compute_aggregated_metrics(results_df, args.distance)
-        
         print("\n=== Aggregated Results (All NTRY Rounds) ===")
         print(f"Experiments per subject: {NTRY}")
-        print(f"Per-subject align accuracy (averaged over {NTRY} seeds):")
-        for idx, s in enumerate(current_metrics['subjects']):
-            print(f"  Subject {s}: {current_metrics['per_subject_align'][idx]:.3f}")
-        print(f"\nFinal Align: {current_metrics['align_mean']:.3f} ± {current_metrics['align_std']:.3f}")
-        print(f"Final No-Align: {current_metrics['noalign_mean']:.3f} ± {current_metrics['noalign_std']:.3f}")
+        for distance in distances:
+            current_metrics = compute_aggregated_metrics(results_df, distance)
+            print(f"\nMethod: {distance}")
+            print(f"Per-subject align accuracy (averaged over {NTRY} seeds):")
+            for idx, s in enumerate(current_metrics['subjects']):
+                print(f"  Subject {s}: {current_metrics['per_subject_align'][idx]:.3f}")
+            print(f"Final Align: {current_metrics['align_mean']:.3f} ± {current_metrics['align_std']:.3f}")
+            print(f"Final No-Align: {current_metrics['noalign_mean']:.3f} ± {current_metrics['noalign_std']:.3f}")
         
        # Rebuild TensorBoard curves
         print("\n=== Rebuilding complete TensorBoard curves ===")

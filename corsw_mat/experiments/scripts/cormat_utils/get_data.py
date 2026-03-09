@@ -8,6 +8,7 @@ available on http://bnci-horizon-2020.eu/database/data-sets
 
 import numpy as np
 import scipy.io as sio
+from typing import Optional, Sequence, Tuple
 
 from .filters import load_filterbank, butter_fir_filter
 
@@ -15,20 +16,80 @@ __author__ = "Michael Hersche and Tino Rellstab"
 __email__ = "herschmi@ethz.ch,tinor@ethz.ch"
 
 
-def get_cov(data, ftype="butter"):
+DATASET_PRESETS = {
+    "bnci2014001": {
+        "events": ["left_hand", "right_hand", "feet", "tongue"],
+        "channels": None,
+        "resample": 250,
+        "tmin": 0.0,
+        "tmax": 6.0,
+        "cov_fs": 250,
+        "cov_time_window": (2.5, 6.0),
+        "subjects": [1, 3, 7, 8, 9],
+    },
+    "bnci2015001": {
+        "events": ["right_hand", "feet"],
+        "channels": None,
+        "resample": 256,
+        "tmin": 0.0,
+        "tmax": 4.0,
+        "cov_fs": 256,
+        "cov_time_window": (1.0, 4.0),
+        "subjects": list(range(1, 13)),
+    },
+    "lee2019": {
+        "events": ["left_hand", "right_hand"],
+        "channels": [
+            "FC5", "FC3", "FC1", "FC2", "FC4", "FC6",
+            "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
+            "CP5", "CP3", "CP1", "CPz", "CP2", "CP4", "CP6",
+        ],
+        "resample": 250,
+        "tmin": 0.0,
+        "tmax": 3.5,
+        "cov_fs": 250,
+        "cov_time_window": (1.0, 3.5),
+        "subjects": list(range(1, 55)),
+    },
+    "stieger2021": {
+        "events": ["left_hand", "right_hand", "both_hand", "rest"],
+        "channels": [
+            "F5", "F3", "F1", "Fz", "F2", "F4", "F6",
+            "FC5", "FC3", "FC1", "FC2", "FC4", "FC6",
+            "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
+            "CP5", "CP3", "CP1", "CPz", "CP2", "CP4", "CP6",
+            "P5", "P3", "P1", "Pz", "P2", "P4", "P6",
+        ],
+        "resample": 250,
+        "tmin": 0.0,
+        "tmax": 2.996,
+        "cov_fs": 250,
+        "cov_time_window": (1.0, 2.996),
+        "subjects": list(range(1, 63)),
+    },
+}
+
+
+def _resolve_time_windows(fs: int, time_window: Optional[Tuple[float, float]] = None):
+    if time_window is None:
+        time_windows_flt = np.array([[2.5, 6.0]]) * fs
+    else:
+        t0, t1 = time_window
+        if t1 <= t0:
+            raise ValueError(f"Invalid time window: ({t0}, {t1})")
+        time_windows_flt = np.array([[t0, t1]]) * fs
+    return time_windows_flt.astype(int)
+
+
+def get_cov(data, ftype="butter", fs=250, time_window: Optional[Tuple[float, float]] = None):
     """
         One frequency
     """
-    fs = 250 # Sampling frequency
     bw = [22] # [25] # bandwidth
     forder = 8
     max_freq = 30
 
-    time_windows_flt = np.array([[2.5,4.5], [4,6], [2.5,6],
-                                [2.5,3.5], [3,4], [4,5]])*fs
-    time_windows = time_windows_flt.astype(int)
-    # restrict time windows and frequency bands 
-    time_windows = time_windows[2:3]
+    time_windows = _resolve_time_windows(fs=fs, time_window=time_window)
 
     filter_bank = load_filterbank(bandwidth = bw, fs = fs, order = forder, 
                                   max_freq = max_freq, ftype = ftype)
@@ -60,11 +121,10 @@ def get_cov(data, ftype="butter"):
     return cov_mat
 
 
-def get_cov2(data):
+def get_cov2(data, fs=250, time_window: Optional[Tuple[float, float]] = None):
     """
         Multifrequency (hyperparameters from https://github.com/MultiScale-BCI/IV-2a)
     """
-    fs = 250 # Sampling frequency
     # bw = [25] ## bandwidth [2, 4, 8, 16, 32]
     bw = [2, 4, 8, 16, 32]
 #     max_freq = 40
@@ -72,11 +132,7 @@ def get_cov2(data):
     max_freq = 30
     ftype = "butter"
 
-    time_windows_flt = np.array([[2.5,4.5], [4,6], [2.5,6],
-                                [2.5,3.5], [3,4], [4,5]])*fs
-    time_windows = time_windows_flt.astype(int)
-    # restrict time windows and frequency bands
-    time_windows = time_windows[2:3] 
+    time_windows = _resolve_time_windows(fs=fs, time_window=time_window)
     
     filter_bank = load_filterbank(bandwidth=bw, fs=fs, order=forder,
                                   max_freq=max_freq, ftype=ftype, multifreq=False)
@@ -107,7 +163,80 @@ def get_cov2(data):
     return cov_mat
 
 
-def get_data(subject, training, PATH):
+def _load_moabb_subject_data(
+    dataset_name: str,
+    subject: int,
+    training: bool,
+    sessions: Optional[Sequence] = None,
+    channels: Optional[Sequence[str]] = None,
+    resample: Optional[int] = None,
+    tmin: Optional[float] = None,
+    tmax: Optional[float] = None,
+):
+    from moabb.paradigms.motor_imagery import MotorImagery
+    from moabb.datasets.bnci import BNCI2014001, BNCI2015001
+    from moabb.datasets import Lee2019_MI
+
+    name = dataset_name.lower()
+    if name not in DATASET_PRESETS:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
+    preset = DATASET_PRESETS[name]
+    if channels is None:
+        channels = preset["channels"]
+    if resample is None:
+        resample = preset["resample"]
+    if tmin is None:
+        tmin = preset["tmin"]
+    if tmax is None:
+        tmax = preset["tmax"]
+    events = preset["events"]
+
+    if name == "bnci2014001":
+        dataset = BNCI2014001()
+    elif name == "bnci2015001":
+        dataset = BNCI2015001()
+    elif name == "lee2019":
+        dataset = Lee2019_MI()
+    elif name == "stieger2021":
+        from moabb.datasets import Stieger2021 as MoabbStieger2021
+        dataset = MoabbStieger2021()
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
+
+    paradigm_kwargs = dict(events=events)
+    if channels is not None:
+        paradigm_kwargs["channels"] = list(channels)
+    if resample is not None:
+        paradigm_kwargs["resample"] = int(resample)
+    if tmin is not None:
+        paradigm_kwargs["tmin"] = float(tmin)
+    if tmax is not None:
+        paradigm_kwargs["tmax"] = float(tmax)
+
+    paradigm = MotorImagery(n_classes=len(events), **paradigm_kwargs)
+    X, y, metadata = paradigm.get_data(dataset=dataset, subjects=[subject])
+
+    if sessions is not None and len(sessions) > 0:
+        mask = metadata["session"].isin(list(sessions)).to_numpy()
+        X = X[mask]
+        y = y[mask]
+        metadata = metadata.loc[mask]
+    else:
+        unique_sessions = list(metadata["session"].unique())
+        unique_sessions = sorted(unique_sessions)
+        if len(unique_sessions) >= 2:
+            selected = unique_sessions[0] if training else unique_sessions[1]
+            mask = (metadata["session"] == selected).to_numpy()
+            X = X[mask]
+            y = y[mask]
+
+    uniq = np.unique(y)
+    y_map = {lbl: i + 1 for i, lbl in enumerate(uniq)}
+    y_int = np.array([y_map[v] for v in y], dtype=np.int64)
+    return X, y_int
+
+
+def get_data(subject, training, PATH, dataset: str = "bnci2014001"):
 	'''	Loads the dataset 2a of the BCI Competition IV
 	available on http://bnci-horizon-2020.eu/database/data-sets
 
@@ -119,6 +248,10 @@ def get_data(subject, training, PATH):
 	Return:	data_return 	numpy matrix 	size = NO_valid_trial x 22 x 1750
 			class_return 	numpy matrix 	size = NO_valid_trial
 	'''
+	name = dataset.lower()
+	if name != "bnci2014001":
+		return _load_moabb_subject_data(dataset_name=dataset, subject=subject, training=training)
+
 	NO_channels = 22
 	NO_tests = 6*48 	
 	Window_Length = 7*250 
