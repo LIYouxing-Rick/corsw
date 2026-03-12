@@ -80,6 +80,7 @@ if str(DEVICE).startswith("cuda") and not torch.cuda.is_available():
     raise RuntimeError(f"Requested device '{DEVICE}' but CUDA is not available.")
 DTYPE = torch.float64
 RNG = np.random.default_rng(SEED)
+DEFAULT_SEEDS = [929, 1884, 2473, 7066, 7490]
 mem = Memory(
     location=os.path.join(EXPERIMENTS, "scripts/tmp_da/"),
     verbose=0
@@ -361,7 +362,7 @@ if __name__ == "__main__":
     if args.seed_list is not None:
         all_seeds = np.array(_parse_seed_list(args.seed_list), dtype=int)
     else:
-        all_seeds = RNG.choice(10000, NTRY, replace=False)
+        all_seeds = np.array(DEFAULT_SEEDS, dtype=int)
     run_ntry = len(all_seeds)
 
     hyperparams = {
